@@ -1,0 +1,158 @@
+steps:
+
+  - name: ubuntu
+    id: Build information
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        echo \*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
+        echo BUILD DETAILS:
+        [ ! -z "${PROJECT_ID}" ]     && echo "Project ID:    ${PROJECT_ID}"
+        [ ! -z "${BUILD_ID}" ]       && echo "Build ID:      ${BUILD_ID}"
+        [ ! -z "${COMMIT_SHA}" ]     && echo "Commit SHA:    ${COMMIT_SHA}"
+        [ ! -z "${SHORT_SHA}" ]      && echo "Short SHA:     ${SHORT_SHA}"
+        [ ! -z "${REPO_NAME}" ]      && echo "Repo name:     ${REPO_NAME}"
+        [ ! -z "${BRANCH_NAME}" ]    && echo "Branch name:   ${BRANCH_NAME}"
+        [ ! -z "${TAG_NAME}" ]       && echo "Tag name:      ${TAG_NAME}"
+        [ ! -z "${REVISION_ID}" ]    && echo "Revision ID:   ${REVISION_ID}"
+        [ ! -z "${_HEAD_BRANCH}" ]   && echo "Head branch:   ${_HEAD_BRANCH}"
+        [ ! -z "${_BASE_BRANCH}" ]   && echo "Base branch:   ${_BASE_BRANCH}"
+        [ ! -z "${_HEAD_REPO_URL}" ] && echo "Head repo URL: ${_HEAD_REPO_URL}"
+        [ ! -z "${_PR_NUMBER}" ]     && echo "PR number:     ${_PR_NUMBER}"
+        echo \*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
+
+  ###############
+  ### Deploy code
+
+#
+  # Prepare environment
+  #
+  - name: gcr.io/cloud-builders/git
+    id: Clean Workspace
+    entrypoint: sh
+    args:
+      - '-c'
+      - |
+        rm -rf *
+        rm -rf .[a-zA-Z_]*
+        #get the project number as well
+        gcloud projects list --filter="$PROJECT_ID" --format="value(PROJECT_NUMBER)" > project_number.txt
+        cat project_number.txt
+
+  - name: gcr.io/cloud-builders/gsutil
+    id: Acquire keys
+    args: ['cp', 'gs://${_GITHUB_KEYSTORE}/github_id_rsa.enc', 'github_id_rsa.enc']
+
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: Prepare keys
+    args:
+    - kms
+    - decrypt
+    - --project=${_GITHUB_KMS_KEY_PROJECT}
+    - --ciphertext-file=github_id_rsa.enc
+    - --plaintext-file=/root/.ssh/git_id_rsa
+    - --location=${_LOCATION}
+    - --keyring=${_GITHUB_KMS_KEY_RING_NAME}
+    - --key=${_GITHUB_KMS_KEY_NAME}
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+
+  # Set up git with key and domain
+  - name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    id: Git Clone
+    args:
+    - '-c'
+    - |
+      chmod 600 /root/.ssh/git_id_rsa
+      cat <<EOF >/root/.ssh/config
+      Hostname github.com
+      IdentityFile /root/.ssh/git_id_rsa
+      EOF
+      ssh-keyscan -t rsa github.com >> /root/.ssh/known_hosts
+      echo "git clone git@${_GIT_ORIGIN}"
+      git clone git@${_GIT_ORIGIN}
+      cd ${_REPO_DIR}
+      git checkout $BRANCH_NAME
+
+      #mv known_hosts /root/.ssh/known_hosts
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+
+  - name: mikefarah/yq
+    id: Set Version
+    entrypoint: sh
+    args:
+    - '-c'
+    - |
+      echo "$(cat ${_REPO_DIR}/version.yaml | yq r - version_major_minor).$SHORT_SHA" > version.txt
+      cat version.txt
+
+  #
+  # Deploy code
+  #
+
+  - name: hashicorp/terraform
+    id: Terraform version
+    args:
+      - '-v'
+    dir: ${_REPO_DIR}/infra/terraform/
+
+  - name: hashicorp/terraform
+    id: Terraform init
+    args:
+      - 'init'
+      - '-backend-config=bucket=${PROJECT_ID}-state'
+    dir: ${_REPO_DIR}/infra/terraform/
+
+  - name: hashicorp/terraform
+    id: Terraform plan
+    args:
+      - 'plan'
+      - '-var-file=tfvars/${PROJECT_ID}.tfvars'
+      - '-out=/workspace/tfplan'
+    dir: ${_REPO_DIR}/infra/terraform/
+
+  - name: hashicorp/terraform
+    id: Terraform apply
+    args:
+      - 'apply'
+      - '-auto-approve'
+      - '/workspace/tfplan'
+    dir: ${_REPO_DIR}/infra/terraform/
+
+  # Test
+
+  - name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    id: Run QA tests
+    args:
+      - '-c'
+      - |
+        echo "QA Test Run!!!"
+
+  # tag
+  
+  - name: 'gcr.io/cloud-builders/git'
+    id: Tag Candidate Release Code
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      version=$(cat version.txt)
+      echo "version is:$version"
+      cd ${_REPO_DIR}
+      git tag $version
+      git push --tag
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+
+# Environment variables
+options:
+  env:
+    - GOOGLE_PROJECT=${PROJECT_ID}
+    - GOOGLE_REGION=${_REGION}

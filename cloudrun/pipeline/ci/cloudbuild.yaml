@@ -1,0 +1,65 @@
+steps:
+
+  - name: ubuntu
+    id: Build information
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        echo \*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
+        echo BUILD DETAILS:
+        [ ! -z "${PROJECT_ID}" ]     && echo "Project ID:    ${PROJECT_ID}"
+        [ ! -z "${BUILD_ID}" ]       && echo "Build ID:      ${BUILD_ID}"
+        [ ! -z "${COMMIT_SHA}" ]     && echo "Commit SHA:    ${COMMIT_SHA}"
+        [ ! -z "${SHORT_SHA}" ]      && echo "Short SHA:     ${SHORT_SHA}"
+        [ ! -z "${REPO_NAME}" ]      && echo "Repo name:     ${REPO_NAME}"
+        [ ! -z "${BRANCH_NAME}" ]    && echo "Branch name:   ${BRANCH_NAME}"
+        [ ! -z "${TAG_NAME}" ]       && echo "Tag name:      ${TAG_NAME}"
+        [ ! -z "${REVISION_ID}" ]    && echo "Revision ID:   ${REVISION_ID}"
+        [ ! -z "${_HEAD_BRANCH}" ]   && echo "Head branch:   ${_HEAD_BRANCH}"
+        [ ! -z "${_BASE_BRANCH}" ]   && echo "Base branch:   ${_BASE_BRANCH}"
+        [ ! -z "${_HEAD_REPO_URL}" ] && echo "Head repo URL: ${_HEAD_REPO_URL}"
+        [ ! -z "${_PR_NUMBER}" ]     && echo "PR number:     ${_PR_NUMBER}"
+        echo \*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
+
+
+  ###############
+  ### Deploy code
+
+  - name: hashicorp/terraform
+    id: Terraform init
+    args:
+      - 'init'
+      - '-backend-config=bucket=${PROJECT_ID}-state'
+    dir: infra
+  
+  - name: hashicorp/terraform
+    id: Terraform plan
+    args:
+      - 'plan'
+      - '-out=/workspace/tfplan'
+    dir: infra
+  
+  #- name: hashicorp/terraform
+  #  id: Terraform apply
+  #  args:
+  #    - 'apply'
+  #    - '-auto-approve'
+  #    - '/workspace/tfplan'
+  #  dir: infra
+
+
+  ###################
+  ### Testing, CI etc
+
+#ENV Variables
+options:
+  env:
+    - TF_VAR_project_name=${_PROJECT_NAME}
+    - TF_VAR_pipeline_type=${_PIPELINE_TYPE}
+    - TF_VAR_region=${_REGION}
+    - TF_VAR_org_id=${_ORG_ID}
+    - TF_VAR_folder_id=${_PROJECT_PARENT}
+    - TF_VAR_billing_account=${_BILLING_ACCOUNT}
+    - GOOGLE_PROJECT=${_PROJECT_NAME}
+    - GOOGLE_REGION=${_REGION}
